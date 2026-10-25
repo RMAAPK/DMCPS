@@ -11,7 +11,7 @@
     "start": "node dist/dashboard.js",
     "stdio": "node dist/stdio.js",
     "dev": "ts-node-esm src/dashboard.ts",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+    "test": "node --test test/security_node.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.1",
