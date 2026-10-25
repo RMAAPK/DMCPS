@@ -1,10 +1,8 @@
-# 🛡️ DMCPS V3 (Google Cloud Edition)
+# 🛡️ DMCPS (Docker Model Context Protocol Secured)
 
 [![CI Tests](https://github.com/RMAAPK/dmcps/actions/workflows/test.yml/badge.svg)](https://github.com/RMAAPK/dmcps/actions/workflows/test.yml)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](https://mariadb.com/bsl11/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.thealidev/dmcps-success)](https://registry.modelcontextprotocol.io/)
-
-**🚀 BUILT FOR THE GOOGLE CLOUD RUN TAKEOVER HACKATHON 🚀**
 
 DMCPS V3 is the ultimate enterprise-grade sandbox for AI coding agents, completely re-engineered to run natively on **Google Cloud Run**. By utilizing Google's serverless container infrastructure, you can give AI agents (like Claude Desktop, Cursor, or Gemini) full terminal and filesystem execution without ever risking your host machine.
 
