@@ -1,36 +1,24 @@
-# Dependencies
-node_modules/
-.npm/
+# CMake / compiled output
+/build/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/Testing/
+*.o
+*.a
+*.so
+*.exe
 
-# Build output
-dist/
-
-# Environment files
+# Secrets, local config, and sandbox data
 .env
-.env.local
-.env.development
-.env.test
-.env.production
+.env.*
+!.env.example
+/config/
+/projects/
+/backups/
 
-# App data / Database / Configs
-config/
-projects/
-/tmp/
-
-# Editor directories and files
+# Editors and OS files
 .vscode/
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# OS generated files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db

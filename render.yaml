@@ -1,12 +1,19 @@
 services:
   - type: web
-    name: mcp-sandbox
-    env: node
+    name: dmcps
+    env: docker
     plan: free
-    buildCommand: npm install && npm run build
-    startCommand: npm start
+    healthCheckPath: /healthz
     envVars:
+      - key: ADMIN_USERNAME
+        value: admin
       - key: ADMIN_PASSWORD
         generateValue: true
-      - key: NODE_ENV
-        value: production
+      - key: MCP_API_KEY
+        generateValue: true
+      - key: CONFIG_PATH
+        value: /tmp/allowed_dirs.json
+      - key: WORKSPACE_DIR
+        value: /workspace
+      - key: BACKUP_DIR
+        value: /tmp/backups

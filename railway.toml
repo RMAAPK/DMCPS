@@ -1,7 +1,9 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "npm install && npm run build"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "npm start"
+startCommand = "/usr/local/bin/dmcps --http"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"

@@ -1,34 +1,37 @@
-FROM node:20-alpine
+FROM debian:trixie-slim AS build
 
-# Alpine's node image already has a non-root 'node' user
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git pkg-config nlohmann-json3-dev \
+    libcurl4-openssl-dev ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /build
+COPY CMakeLists.txt ./
+COPY include ./include
+COPY src ./src
+COPY tests ./tests
+RUN cmake -S . -B out -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON && \
+    cmake --build out --parallel && ctest --test-dir out --output-on-failure
 
-# Copy package files
-COPY package*.json ./
+FROM debian:trixie-slim AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libcurl4t64 libstdc++6 libgcc-s1 bash curl git python3 make jq vim unzip tar && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --system --gid 10001 dmcps && \
+    useradd --system --uid 10001 --gid 10001 --home-dir /home/dmcps --create-home dmcps && \
+    install -d -o 10001 -g 10001 /workspace /backups /var/lib/dmcps /tmp
 
-# Install dependencies cleanly
-RUN npm ci
+COPY --from=build /build/out/dmcps /usr/local/bin/dmcps
 
-# Install cloudflared for Cloudflare Tunnel support and sudo for package management
-USER root
-RUN apk add --no-cache curl sudo iptables git bash python3 make g++ jq vim unzip tar && \
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && \
-    chmod +x /usr/local/bin/cloudflared && \
-    echo "node ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/node && \
-    chmod 0440 /etc/sudoers.d/node
-
-# Copy application source code
-COPY . .
-
-# Build the TypeScript code
-RUN npm run build
-
-# Create the isolated workspace directory and assign ownership to the non-root user
-RUN mkdir -p /workspace && chown -R node:node /workspace && chown -R node:node /app
-
-# Kept as root to allow package installation on PaaS platforms like Render
-
-# Start the MCP server using stdio
-CMD ["npm", "start"]
+ENV PORT=3000 \
+    WORKSPACE_DIR=/workspace \
+    BACKUP_DIR=/backups \
+    CONFIG_PATH=/var/lib/dmcps/allowed_dirs.json
+WORKDIR /workspace
+USER 10001:10001
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/dmcps"]
+CMD ["--http"]
 

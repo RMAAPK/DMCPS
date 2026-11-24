@@ -1,69 +1,54 @@
-# 🛡️ DMCPS (Docker Model Context Protocol Secured)
+# DMCPS — C++ MCP sandbox
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23859054.svg)](https://doi.org/10.5281/zenodo.23859054)
+DMCPS is a C++20 server that exposes filesystem and shell tools through the Model Context Protocol. It provides an authenticated admin dashboard, MCP over legacy SSE (`/sse`) and stateless JSON-RPC HTTP (`/mcp`), plus stdio mode for local MCP clients. The intended deployment boundary is a restricted container; the directory list controls the filesystem MCP tools and each shell command's working directory, while Docker isolation limits what arbitrary shell commands can see.
 
+## Build and test
 
-[![CI Tests](https://github.com/RMAAPK/dmcps/actions/workflows/test.yml/badge.svg)](https://github.com/RMAAPK/dmcps/actions/workflows/test.yml)
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](https://mariadb.com/bsl11/)
-[![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.thealidev/dmcps-success)](https://registry.modelcontextprotocol.io/)
+The easiest supported route is Docker:
 
-DMCPS V3 is the ultimate enterprise-grade sandbox for AI coding agents, completely re-engineered to run natively on **Google Cloud Run**. By utilizing Google's serverless container infrastructure, you can give AI agents (like Claude Desktop, Cursor, or Gemini) full terminal and filesystem execution without ever risking your host machine.
-
-<p align="center">
-  <a href="https://www.producthunt.com/products/dmcps/reviews/new?utm_source=badge-product_review&utm_medium=badge&utm_source=badge-dmcps" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/product_review.svg?product_id=1333432&theme=neutral" alt="DMCPS - Secure Docker sandbox for AI agent filesystem & shell access | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" /></a>
-</p>
-
-## 🌟 Hackathon Exclusive Features
-
-1. **Native Google Cloud Run Architecture:** Zero-friction automated deployments via `cloudbuild.yaml`. Designed from the ground up to utilize Google's serverless containers.
-2. **Product Hunt PKCE OAuth Flow:** The web dashboard is secured using Product Hunt's official API. Authenticate your makers and manage your AI sandbox instantly using your Product Hunt account.
-3. **Enterprise Open Source (BSL-1.1):** Codebase is fully open for developers to inspect the kernel-level protections and deploy to their own GCP environment, while legally protecting commercial/enterprise use.
-4. **Kernel-Level Locks:** Non-root Alpine execution with dropped Linux capabilities (`cap_drop: ALL`).
-5. **Absolute Root Illusion:** The AI is assigned a direct `root` user within the disposable container, tricking it into feeling absolute freedom without any "Permission denied" frustrations, keeping it from getting stuck in looping errors.
-
----
-
-## 🚀 Getting Started on Google Cloud
-
-Deploying DMCPS V3 is incredibly simple using **Google Cloud Build**.
-
-1. Navigate to **Cloud Build Triggers** in your Google Cloud Console.
-2. Click **Connect Repository** and link this GitHub repository.
-3. Set the trigger to watch the `v3-beta` branch.
-4. Point the configuration to the included `/cloudbuild.yaml` file.
-5. Click **Run**.
-
-Google Cloud Build will automatically build the container, push it to your Container Registry, and deploy it as a highly scalable **Google Cloud Run** service!
-
----
-
-## 🔒 Security & Dashboard Whitelisting
-
-This is built as a robust **Node.js/Express backend daemon**, featuring a "military-grade" secured dashboard to strictly manage which directories the AI is allowed to touch.
-
-- **Strict Whitelisting**: The AI cannot read, write, or execute commands outside of directories explicitly whitelisted via the web dashboard. (Directory traversal attempts like `../` are mathematically blocked).
-- **Product Hunt Integration**: Secure login restricted to Product Hunt makers using PKCE OAuth 2.0 flow.
-- **Auto-Generated API Keys**: Connect to your MCP server using a dynamically generated Bearer token to ensure only authorized agents can execute tools on your server.
-- **Pre-installed AI Toolkit**: Foundational tools (`git`, `python3`, `curl`, `bash`, `make`, `jq`) are pre-baked into the image so the AI is immediately ready to work.
-
-## 🛠️ MCP Tools Exposed to the AI
-Once authenticated and restricted to a whitelisted folder, the AI has access to:
-1. `ph_graphql_query` - Run deep analytics queries against the Product Hunt API.
-2. `read_file` - Read text from a file.
-3. `write_file` - Write content to a file.
-4. `list_directory` - List all files in a folder.
-5. `run_shell_command` - Execute terminal commands strictly within the isolated workspace.
-
----
-
-## 🧪 Local Testing
-
-You can easily test the entire stack locally or on an AWS instance before pushing to Google Cloud Run:
-
-```bash
-git clone -b v3-beta https://github.com/RMAAPK/dmcps.git
-cd dmcps
-git checkout v3-beta
-docker compose up -d --build
+```sh
+cp .env.example .env
+# Edit .env; set a unique ADMIN_PASSWORD (at least 12 characters).
+mkdir -p projects
+docker compose up --build -d
 ```
-*Note: Ensure you port-forward to `https://localhost:5000` to properly test the Product Hunt OAuth Redirect URI.*
+
+Open `http://localhost:3000` and sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Add `/workspace` or a narrower directory under it. Writes are only enabled when the corresponding option is checked. For HTTPS, set `DOMAIN_NAME` to a DNS name pointing at the host and start Caddy with `docker compose --profile tls up --build -d`; otherwise the app port is exposed directly for local testing.
+
+To build on Debian/Ubuntu, install `cmake`, a C++20 compiler, `git`, `nlohmann-json3-dev`, and `libcurl4-openssl-dev` (CMake fetches the pinned cpp-httplib source), then:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+HTTP mode requires `ADMIN_PASSWORD` with at least 12 characters. For local HTTP development, set writable local paths, for example `ADMIN_PASSWORD='a-unique-local-secret' CONFIG_PATH="$PWD/config/allowed_dirs.json" WORKSPACE_DIR="$PWD/projects" BACKUP_DIR="$PWD/backups" ./build/dmcps`. Run `./build/dmcps --stdio` for newline-delimited MCP JSON-RPC over stdin/stdout. `PORT`, `WORKSPACE_DIR`, `BACKUP_DIR`, and `CONFIG_PATH` can be overridden with environment variables.
+
+## MCP tools
+
+- `read_file`, `write_file`, and `list_directory` operate only under an explicitly approved directory. Writes additionally require write access.
+- `run_shell_command` starts `/bin/sh` as the unprivileged container user, with a 30-second limit and a 64 KiB output cap. Its `cwd` must be approved. Shell commands are inherently not constrained to that directory: they can access anything visible inside the container. Do not mount sensitive host paths into the container.
+- `ph_graphql_query` is available when `PH_ACCESS_TOKEN` is set.
+
+The dashboard is protected by HTTP Basic Auth. MCP routes require `Authorization: Bearer <MCP_API_KEY>`; a query `key` is accepted only for older clients. If no `MCP_API_KEY` is set, a random key is generated and stored in `CONFIG_PATH`. The dashboard displays it only after admin authentication. The health endpoint `/healthz` is public.
+
+Existing `allowedDirectories` config files are migrated to the new `directorySettings` format with writes and backups disabled. The first start has no approved directories, so file/shell tools remain locked until an admin adds paths.
+
+## Backups
+
+When a directory has backups enabled, the server copies an existing file to `BACKUP_DIR` before replacing it. Optional remote uploads use `HF_BUCKET_URL` plus `HF_API_KEY` and HTTPS only. The previous whole-container root snapshot/restore behavior is intentionally not carried over: extracting a remote archive into `/` was unsafe.
+
+## Container security
+
+The image runs as UID 10001, has a read-only root filesystem in Compose, drops Linux capabilities, and uses `no-new-privileges`. Only `./projects` is mounted as workspace data; config and backups use separate named volumes. On Linux hosts, make the project directory writable by UID 10001 (or deliberately change the container UID to match your account). Keep mounts narrow. Because shell commands are arbitrary by design, the container boundary—not the directory UI—is the final isolation layer. Never run this container privileged or mount the host root, Docker socket, credentials, or other sensitive locations.
+
+`docker-compose.yml` includes Caddy as an optional TLS reverse proxy. Set `DOMAIN_NAME` and point DNS at the machine before exposing it publicly. Configure `CORS_ORIGIN` narrowly if browser clients need cross-origin access.
+
+## Deployments
+
+The Dockerfile is the canonical build for Cloud Run, Railway, and Render. The supplied Render configuration uses the free plan and therefore stores its config/backups on ephemeral storage; use a persistent disk if you need those settings to survive instance replacement. `cloudbuild.yaml` expects Secret Manager secrets named `dmcps-admin-password` and `dmcps-mcp-api-key`; create them and grant the Cloud Build/Cloud Run service accounts access before deploying. Vercel's previous serverless Node configuration was removed because it cannot host this persistent C++ MCP/SSE server in the same way.
+
+## License
+
+MIT License; see [LICENSE](LICENSE).
