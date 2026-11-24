@@ -1,4 +1,5 @@
 #include "dmcps/security.hpp"
+#include "dmcps/oauth.hpp"
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -256,7 +257,23 @@ void addMcpCorsHeaders(const httplib::Request& req, httplib::Response& res) {
     (void)req;
 }
 
-bool checkMcpAuth(const httplib::Request& req, httplib::Response& res, const std::string& expected) {
+std::string externalBaseUrl(const httplib::Request& req) {
+    std::string scheme = req.get_header_value("X-Forwarded-Proto");
+    const auto comma = scheme.find(',');
+    if (comma != std::string::npos) scheme.resize(comma);
+    while (!scheme.empty() && std::isspace(static_cast<unsigned char>(scheme.front()))) scheme.erase(scheme.begin());
+    while (!scheme.empty() && std::isspace(static_cast<unsigned char>(scheme.back()))) scheme.pop_back();
+    if (scheme != "https" && scheme != "http") scheme = "http";
+    std::string host = req.get_header_value("Host");
+    const bool safeHost = !host.empty() && std::all_of(host.begin(), host.end(), [](unsigned char c) {
+        return std::isalnum(c) || c == '.' || c == '-' || c == ':' || c == '[' || c == ']';
+    });
+    if (!safeHost) host = "localhost";
+    return scheme + "://" + host;
+}
+
+bool checkMcpAuth(const httplib::Request& req, httplib::Response& res,
+                  const dmcps::oauth::AuthorizationServer& oauth) {
     addMcpCorsHeaders(req, res);
     if (req.method == "OPTIONS") {
         res.status = 204;
@@ -270,7 +287,12 @@ bool checkMcpAuth(const httplib::Request& req, httplib::Response& res, const std
     } else if (req.has_param("key")) {
         supplied = req.get_param_value("key");
     }
-    if (!constantTimeEqual(supplied, expected)) {
+    if (!oauth.authenticateBearer(supplied)) {
+        std::string resourcePath = req.path;
+        if (resourcePath.find_first_not_of("/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") != std::string::npos)
+            resourcePath = "/sse";
+        const std::string metadata = externalBaseUrl(req) + "/.well-known/oauth-protected-resource" + resourcePath;
+        res.set_header("WWW-Authenticate", "Bearer resource_metadata=\"" + metadata + "\", scope=\"mcp\"");
         res.status = 401;
         res.set_content(R"({"error":"Unauthorized"})", "application/json");
         return false;
@@ -290,6 +312,14 @@ std::string encodeQueryValue(const std::string& value) {
         }
     }
     return out.str();
+}
+
+std::string redirectWithAuthorizationCode(const std::string& uri, const std::string& code, const std::string& state) {
+    std::string result = uri;
+    result += uri.find('?') == std::string::npos ? '?' : '&';
+    result += "code=" + encodeQueryValue(code);
+    if (!state.empty()) result += "&state=" + encodeQueryValue(state);
+    return result;
 }
 
 struct SseSession {
@@ -669,6 +699,54 @@ std::string readRequestJson(const httplib::Request& req) {
     return req.body;
 }
 
+std::string decodeFormComponent(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    const auto hexValue = [](unsigned char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '+') result.push_back(' ');
+        else if (value[i] == '%') {
+            if (i + 2 >= value.size()) throw std::runtime_error("Malformed form encoding");
+            const int hi = hexValue(static_cast<unsigned char>(value[i + 1]));
+            const int lo = hexValue(static_cast<unsigned char>(value[i + 2]));
+            if (hi < 0 || lo < 0) throw std::runtime_error("Malformed form encoding");
+            result.push_back(static_cast<char>((hi << 4) | lo));
+            i += 2;
+        } else result.push_back(value[i]);
+    }
+    return result;
+}
+
+std::unordered_map<std::string, std::string> parseFormUrlEncoded(std::string_view body) {
+    if (body.size() > 64 * 1024) throw std::runtime_error("Form body exceeds the 64 KiB limit");
+    std::unordered_map<std::string, std::string> fields;
+    std::size_t start = 0;
+    while (start <= body.size()) {
+        const auto end = body.find('&', start);
+        const auto pair = body.substr(start, end == std::string_view::npos ? body.size() - start : end - start);
+        if (!pair.empty()) {
+            const auto equals = pair.find('=');
+            const auto key = decodeFormComponent(pair.substr(0, equals));
+            const auto value = equals == std::string_view::npos ? std::string{} : decodeFormComponent(pair.substr(equals + 1));
+            if (key.empty() || !fields.emplace(key, value).second) throw std::runtime_error("Invalid or duplicate form field");
+            if (fields.size() > 32) throw std::runtime_error("Too many form fields");
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return fields;
+}
+
+bool isFormUrlEncoded(const httplib::Request& req) {
+    const std::string contentType = req.get_header_value("Content-Type");
+    return contentType.rfind("application/x-www-form-urlencoded", 0) == 0;
+}
+
 void setSecurityHeaders(httplib::Response& res) {
     res.set_header("X-Content-Type-Options", "nosniff");
     res.set_header("X-Frame-Options", "DENY");
@@ -700,7 +778,8 @@ std::string dashboardHtml(const AppConfig& config, const std::string& csrf) {
          << "<p><label><input type=\"checkbox\" name=\"allowWrite\" checked> Allow writes</label> "
          << "<label><input type=\"checkbox\" name=\"enableBackups\"> Back up existing files before writes</label></p>"
          << "<button type=\"submit\">Save directory</button></form></section>"
-         << "<section><h2>MCP client</h2><p>Endpoint: <code>/sse</code> (SSE) or <code>/mcp</code> (HTTP JSON-RPC); authenticate with the Bearer key above.</p>"
+         << "<section><h2>MCP client</h2><p>Endpoints: <code>/sse</code> (SSE) and <code>/mcp</code> (HTTP JSON-RPC). Clients may use the Bearer key above or OAuth discovery.</p>"
+         << "<p>OAuth metadata: <code>/.well-known/oauth-authorization-server</code>; protected-resource metadata: <code>/.well-known/oauth-protected-resource/sse</code>.</p>"
          << "<p class=\"muted\">Product Hunt queries require PH_ACCESS_TOKEN. Remote file backups are optional via HF_BUCKET_URL and HF_API_KEY.</p></section>"
          << "</body></html>";
     return html.str();
@@ -718,9 +797,135 @@ void serveHttp(ConfigStore& config, ToolDispatcher& tools, int port) {
     server.set_write_timeout(30, 0);
     server.set_keep_alive_timeout(5);
     server.new_task_queue = [] { return new httplib::ThreadPool(24, 256); };
+    dmcps::oauth::AuthorizationServer oauth(config.snapshot().apiKey);
     const std::string csrfToken = randomHex(24);
     std::mutex sessionsMutex;
     std::unordered_map<std::string, std::shared_ptr<SseSession>> sessions;
+
+    const auto sendOAuthError = [](httplib::Response& res, const dmcps::oauth::OAuthError& error) {
+        res.set_header("Cache-Control", "no-store");
+        sendJson(res, {{"error", error.code}, {"error_description", error.what()}}, error.status);
+    };
+    const auto sendAuthMetadata = [&](const httplib::Request& req, httplib::Response& res, bool mcpIssuer) {
+        const std::string base = externalBaseUrl(req);
+        const std::string issuer = mcpIssuer ? base + "/mcp" : base;
+        res.set_header("Cache-Control", "public, max-age=300");
+        sendJson(res, oauth.authorizationMetadata(issuer, base));
+    };
+    const auto sendProtectedResourceMetadata = [&](const httplib::Request& req, httplib::Response& res) {
+        const std::string base = externalBaseUrl(req);
+        const std::string prefix = "/.well-known/oauth-protected-resource";
+        std::string suffix = req.path.substr(prefix.size());
+        if (suffix.empty()) suffix = "/sse";
+        res.set_header("Cache-Control", "public, max-age=300");
+        sendJson(res, oauth.protectedResourceMetadata(base + suffix, base));
+    };
+    server.Get("/.well-known/oauth-authorization-server", [&](const httplib::Request& req, httplib::Response& res) {
+        sendAuthMetadata(req, res, false);
+    });
+    server.Get("/.well-known/openid-configuration", [&](const httplib::Request& req, httplib::Response& res) {
+        sendAuthMetadata(req, res, false);
+    });
+    server.Get("/mcp/.well-known/oauth-authorization-server", [&](const httplib::Request& req, httplib::Response& res) {
+        sendAuthMetadata(req, res, true);
+    });
+    server.Get("/mcp/.well-known/openid-configuration", [&](const httplib::Request& req, httplib::Response& res) {
+        sendAuthMetadata(req, res, true);
+    });
+    server.Get("/.well-known/oauth-protected-resource", sendProtectedResourceMetadata);
+    server.Get(R"(/\.well-known/oauth-protected-resource/.+)", sendProtectedResourceMetadata);
+    server.Get("/mcp/.well-known/oauth-protected-resource", [&](const httplib::Request& req, httplib::Response& res) {
+        const std::string base = externalBaseUrl(req);
+        res.set_header("Cache-Control", "public, max-age=300");
+        sendJson(res, oauth.protectedResourceMetadata(base + "/mcp", base + "/mcp"));
+    });
+
+    server.Post("/register", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const json body = json::parse(readRequestJson(req));
+            const auto registered = oauth.registerClient(body, req.remote_addr);
+            res.set_header("Cache-Control", "no-store");
+            sendJson(res, registered, 201);
+        } catch (const dmcps::oauth::OAuthError& e) {
+            sendOAuthError(res, e);
+        } catch (const std::exception&) {
+            sendOAuthError(res, dmcps::oauth::OAuthError(400, "invalid_client_metadata", "Malformed client metadata"));
+        }
+    });
+
+    server.Get("/authorize", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            const auto get = [&](const char* name) { return req.has_param(name) ? req.get_param_value(name) : std::string{}; };
+            const std::string clientId = get("client_id");
+            const std::string redirectUri = get("redirect_uri");
+            const std::string state = get("state");
+            const std::string challenge = get("code_challenge");
+            const std::string method = get("code_challenge_method");
+            const std::string scope = get("scope");
+            if (get("response_type") != "code") throw dmcps::oauth::OAuthError(400, "unsupported_response_type", "Only response_type=code is supported");
+            if (state.size() > 1024) throw dmcps::oauth::OAuthError(400, "invalid_request", "State parameter is too long");
+            if (!scope.empty() && scope != "mcp") throw dmcps::oauth::OAuthError(400, "invalid_scope", "Only the mcp scope is supported");
+            (void)oauth.validateAuthorizationRequest(clientId, redirectUri, challenge, method);
+            setSecurityHeaders(res);
+            res.set_header("Cache-Control", "no-store");
+            std::ostringstream page;
+            page << "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                 << "<title>Authorize DMCPS</title><style>body{font:16px system-ui;max-width:36rem;margin:4rem auto;padding:1rem;color:#111827}"
+                 << "input,button{font:inherit;padding:.7rem;margin:.4rem 0;width:100%;box-sizing:border-box}button{cursor:pointer}</style></head><body>"
+                 << "<h1>Authorize DMCPS</h1><p>Enter the MCP access key shown in the DMCPS dashboard. It is sent only to this server.</p>"
+                 << "<form method=\"post\" action=\"/authorize\">"
+                 << "<input type=\"hidden\" name=\"client_id\" value=\"" << htmlEscape(clientId) << "\">"
+                 << "<input type=\"hidden\" name=\"redirect_uri\" value=\"" << htmlEscape(redirectUri) << "\">"
+                 << "<input type=\"hidden\" name=\"state\" value=\"" << htmlEscape(state) << "\">"
+                 << "<input type=\"hidden\" name=\"code_challenge\" value=\"" << htmlEscape(challenge) << "\">"
+                 << "<input type=\"hidden\" name=\"code_challenge_method\" value=\"S256\">"
+                 << "<label for=\"access_key\">DMCPS access key</label><input id=\"access_key\" name=\"access_key\" type=\"password\" autocomplete=\"off\" required>"
+                 << "<button type=\"submit\">Authorize</button></form></body></html>";
+            res.set_content(page.str(), "text/html; charset=utf-8");
+        } catch (const dmcps::oauth::OAuthError& e) {
+            sendOAuthError(res, e);
+        }
+    });
+
+    server.Post("/authorize", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            if (!isFormUrlEncoded(req)) throw dmcps::oauth::OAuthError(400, "invalid_request", "Expected URL-encoded form data");
+            const auto form = parseFormUrlEncoded(req.body);
+            const auto get = [&](const char* name) {
+                const auto it = form.find(name);
+                return it == form.end() ? std::string{} : it->second;
+            };
+            const std::string clientId = get("client_id");
+            const std::string redirectUri = get("redirect_uri");
+            const std::string state = get("state");
+            const std::string code = oauth.authorize(clientId, redirectUri, state, get("code_challenge"),
+                get("code_challenge_method"), get("access_key"));
+            res.status = 303;
+            res.set_header("Cache-Control", "no-store");
+            res.set_header("Location", redirectWithAuthorizationCode(redirectUri, code, state));
+        } catch (const dmcps::oauth::OAuthError& e) {
+            sendOAuthError(res, e);
+        } catch (const std::exception&) {
+            sendOAuthError(res, dmcps::oauth::OAuthError(400, "invalid_request", "Malformed authorization form"));
+        }
+    });
+
+    server.Post("/token", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            if (!isFormUrlEncoded(req)) throw dmcps::oauth::OAuthError(400, "invalid_request", "Expected URL-encoded form data");
+            const auto fields = parseFormUrlEncoded(req.body);
+            json form = json::object();
+            for (const auto& [name, value] : fields) form[name] = value;
+            const auto result = oauth.exchangeToken(form, req.get_header_value("Authorization"));
+            res.set_header("Cache-Control", "no-store");
+            res.set_header("Pragma", "no-cache");
+            sendJson(res, result);
+        } catch (const dmcps::oauth::OAuthError& e) {
+            sendOAuthError(res, e);
+        } catch (const std::exception&) {
+            sendOAuthError(res, dmcps::oauth::OAuthError(400, "invalid_request", "Malformed token request"));
+        }
+    });
 
     server.Get("/healthz", [](const httplib::Request&, httplib::Response& res) {
         sendJson(res, {{"status", "ok"}, {"service", "dmcps-cpp"}});
@@ -768,7 +973,7 @@ void serveHttp(ConfigStore& config, ToolDispatcher& tools, int port) {
     });
 
     auto sseEndpoint = [&](const httplib::Request& req, httplib::Response& res) {
-        if (!checkMcpAuth(req, res, config.snapshot().apiKey)) return;
+        if (!checkMcpAuth(req, res, oauth)) return;
         const std::string id = randomHex(16);
         auto session = std::make_shared<SseSession>();
         {
@@ -826,7 +1031,7 @@ void serveHttp(ConfigStore& config, ToolDispatcher& tools, int port) {
     server.Get("/mcp", sseEndpoint);
 
     auto sessionMessage = [&](const httplib::Request& req, httplib::Response& res) {
-        if (!checkMcpAuth(req, res, config.snapshot().apiKey)) return;
+        if (!checkMcpAuth(req, res, oauth)) return;
         if (!req.has_param("sessionId")) { res.status = 400; res.set_content("Missing sessionId", "text/plain"); return; }
         std::shared_ptr<SseSession> session;
         {
@@ -849,7 +1054,7 @@ void serveHttp(ConfigStore& config, ToolDispatcher& tools, int port) {
     server.Post("/mcp/message", sessionMessage);
 
     auto directMessage = [&](const httplib::Request& req, httplib::Response& res) {
-        if (!checkMcpAuth(req, res, config.snapshot().apiKey)) return;
+        if (!checkMcpAuth(req, res, oauth)) return;
         try {
             const json request = json::parse(readRequestJson(req));
             const auto response = processRpc(request, tools);

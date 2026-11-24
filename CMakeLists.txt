@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
 find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(nlohmann_json 3.11 REQUIRED)
 
 include(FetchContent)
@@ -24,7 +25,7 @@ FetchContent_MakeAvailable(cpp_httplib)
 
 add_executable(dmcps src/main.cpp)
 target_include_directories(dmcps PRIVATE include)
-target_link_libraries(dmcps PRIVATE httplib::httplib nlohmann_json::nlohmann_json CURL::libcurl Threads::Threads)
+target_link_libraries(dmcps PRIVATE httplib::httplib nlohmann_json::nlohmann_json CURL::libcurl OpenSSL::Crypto Threads::Threads)
 target_compile_options(dmcps PRIVATE -Wall -Wextra -Wpedantic)
 
 include(CTest)
@@ -33,6 +34,12 @@ if(BUILD_TESTING)
     target_include_directories(dmcps-security-tests PRIVATE include)
     target_compile_options(dmcps-security-tests PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME security-path-boundaries COMMAND dmcps-security-tests)
+
+    add_executable(dmcps-oauth-tests tests/oauth_tests.cpp)
+    target_include_directories(dmcps-oauth-tests PRIVATE include)
+    target_link_libraries(dmcps-oauth-tests PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto Threads::Threads)
+    target_compile_options(dmcps-oauth-tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME oauth-pkce-flow COMMAND dmcps-oauth-tests)
 endif()
 
 install(TARGETS dmcps RUNTIME DESTINATION bin)

@@ -15,7 +15,7 @@ docker compose up --build -d
 
 Open `http://localhost:3000` and sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Add `/workspace` or a narrower directory under it. Writes are only enabled when the corresponding option is checked. For HTTPS, set `DOMAIN_NAME` to a DNS name pointing at the host and start Caddy with `docker compose --profile tls up --build -d`; otherwise the app port is exposed directly for local testing.
 
-To build on Debian/Ubuntu, install `cmake`, a C++20 compiler, `git`, `nlohmann-json3-dev`, and `libcurl4-openssl-dev` (CMake fetches the pinned cpp-httplib source), then:
+To build on Debian/Ubuntu, install `cmake`, a C++20 compiler, `git`, `nlohmann-json3-dev`, `libssl-dev`, and `libcurl4-openssl-dev` (CMake fetches the pinned cpp-httplib source), then:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -31,7 +31,9 @@ HTTP mode requires `ADMIN_PASSWORD` with at least 12 characters. For local HTTP 
 - `run_shell_command` starts `/bin/sh` as the unprivileged container user, with a 30-second limit and a 64 KiB output cap. Its `cwd` must be approved. Shell commands are inherently not constrained to that directory: they can access anything visible inside the container. Do not mount sensitive host paths into the container.
 - `ph_graphql_query` is available when `PH_ACCESS_TOKEN` is set.
 
-The dashboard is protected by HTTP Basic Auth. MCP routes require `Authorization: Bearer <MCP_API_KEY>`; a query `key` is accepted only for older clients. If no `MCP_API_KEY` is set, a random key is generated and stored in `CONFIG_PATH`. The dashboard displays it only after admin authentication. The health endpoint `/healthz` is public.
+The dashboard is protected by HTTP Basic Auth. MCP routes accept `Authorization: Bearer <MCP_API_KEY>` for existing clients; the query `key` is retained only for older clients. If no `MCP_API_KEY` is set, a random key is generated and stored in `CONFIG_PATH`. The dashboard displays it only after admin authentication. The health endpoint `/healthz` is public.
+
+Gemini-compatible OAuth is also supported: authorization-server and protected-resource discovery, dynamic client registration, and Authorization Code + PKCE S256. The consent page asks the user for the DMCPS MCP API key; successful code exchange returns a signed one-hour bearer token. OAuth metadata is available at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/sse`. Keep the API key private; rotate it to invalidate registered clients and issued tokens.
 
 Existing `allowedDirectories` config files are migrated to the new `directorySettings` format with writes and backups disabled. The first start has no approved directories, so file/shell tools remain locked until an admin adds paths.
 

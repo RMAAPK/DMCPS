@@ -2,7 +2,7 @@ FROM debian:trixie-slim AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git pkg-config nlohmann-json3-dev \
+    build-essential cmake git pkg-config nlohmann-json3-dev libssl-dev \
     libcurl4-openssl-dev ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
@@ -17,7 +17,7 @@ RUN cmake -S . -B out -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON && \
 FROM debian:trixie-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libcurl4t64 libstdc++6 libgcc-s1 bash curl git python3 make jq vim unzip tar && \
+    ca-certificates libcurl4t64 libssl3t64 libstdc++6 libgcc-s1 bash curl git python3 make jq vim unzip tar && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system --gid 10001 dmcps && \
     useradd --system --uid 10001 --gid 10001 --home-dir /home/dmcps --create-home dmcps && \
