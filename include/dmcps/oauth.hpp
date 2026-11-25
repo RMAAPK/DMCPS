@@ -404,9 +404,9 @@ private:
             if (packed.size() <= SHA256_DIGEST_LENGTH) return std::nullopt;
             const std::string payloadBytes = packed.substr(0, packed.size() - SHA256_DIGEST_LENGTH);
             const std::string signature = packed.substr(payloadBytes.size());
-            const std::string expected = hmacSha256(apiKey_, base64UrlEncode(payloadBytes));
+            const std::string expected = hmacSha256(apiKey_, payloadBytes);
             if (!constantTimeEqual(signature, expected)) return std::nullopt;
-            const auto payload = json::parse(payloadBytes);
+            const auto payload = json::parse(base64UrlDecode(payloadBytes));
             if (!payload.is_object() || payload.value("v", 0) != 1 ||
                 !payload.contains("redirect_uris") || !payload["redirect_uris"].is_array() ||
                 payload["redirect_uris"].empty() || payload["redirect_uris"].size() > 20) return std::nullopt;
